@@ -26,6 +26,7 @@ steps:
     ./init_dvwa.sh ${{variables.dvwaContainerPortNumber}}
     if [ $? -eq 1 ]; 
     then 
+      # this will show up as a different color when using ##[log-level]
       echo "##[error] Initialization of dvwa application failed"
       exit 1
     fi
@@ -33,7 +34,7 @@ steps:
     docker network inspect ${{variables.owaspZapNet}}
   displayName: Start up and initialize DVWA container
 - bash: |
-    # to display who the current user is
+    # to display who the current user is, this will show up as a different color when using ##[log-level]
     echo "##[debug] Current user is $USER"
 
     # to display what was checked out from the repo
@@ -52,6 +53,7 @@ steps:
     then 
       echo "Able to reach dvwa container" 
     else 
+      # this will show up as a different color when using ##[log-level]
       echo "##[error] Not able to reach dvwa container"
       exit 1
     fi
