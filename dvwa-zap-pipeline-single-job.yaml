@@ -1,0 +1,96 @@
+variables:
+- name: dvwaContainerName # variable name of a dvwa container
+  value: dvwacontainer
+- name: zapContainerName # variable name of a zap container
+  value: zapcontainer
+- name: dvwaContainerPortNumber # variable name of the public port number mapped to dvwa container
+  value: 8090
+- name: zapContainerPortNumber # variable name of the public port number mapped to zap container
+  value: 8100
+- name: owaspZapNet # variable name of the user defined network that zap and dvwa containers are in
+  value: owasp-zap-net
+- name: modifiedZap2dockerStableImageName # variable name of the customized zap2docker stable image tag
+  value: modified-zap2docker-stable
+- name: dvwaContainerUrl # variable name of the url that is used to access the dvwa web application
+  value: http://${{variables.dvwaContainerName}}/
+
+steps:
+- bash: |
+    docker network create ${{variables.owaspZapNet}}
+  displayName: Creating user defined network to connect the dvwa and zap containers
+- bash: |
+    docker run -d -p ${{variables.dvwaContainerPortNumber}}:80 --name=${{variables.dvwaContainerName}} --network ${{variables.owaspZapNet}} vulnerables/web-dvwa
+
+    # making the script executable
+    chmod u+x init_dvwa.sh
+    ./init_dvwa.sh ${{variables.dvwaContainerPortNumber}}
+    if [ $? -eq 1 ]; 
+    then 
+      echo "##[error] Initialization of dvwa application failed"
+      exit 1
+    fi
+    # displaying the output to show that the dvwa container is registered in the user defined network
+    docker network inspect ${{variables.owaspZapNet}}
+  displayName: Start up and initialize DVWA container
+- bash: |
+    # to display who the current user is
+    echo "##[debug] Current user is $USER"
+
+    # to display what was checked out from the repo
+    ls -al $(Build.Repository.LocalPath)
+
+    # building a new image off the zap2docker stable image, you can change which image to use in your context
+    docker build --tag ${{variables.modifiedZap2dockerStableImageName}} --build-arg USER_ID=$(id -u $USER) --build-arg GROUP_ID=$(id -g $USER) .
+  displayName: Customizing zap2docker-stable image
+- bash: |
+    docker run -t -d -p ${{variables.zapContainerPortNumber}}:8080 --name=${{variables.zapContainerName}} -v $(Build.Repository.LocalPath):/zap/wrk/:rw -w /zap/wrk/  --network ${{variables.owaspZapNet}} ${{variables.modifiedZap2dockerStableImageName}}
+    docker exec ${{variables.zapContainerName}} cp /zap/wrk/log4j2.properties /zap/xml/
+    docker exec ${{variables.zapContainerName}} cp /zap/wrk/config.xml /zap/xml/    
+    docker exec ${{variables.zapContainerName}} ls -al /zap/xml/
+    docker exec ${{variables.zapContainerName}} ping -c 2 ${{variables.dvwaContainerName}}
+    if [ $? -eq 0 ]; 
+    then 
+      echo "Able to reach dvwa container" 
+    else 
+      echo "##[error] Not able to reach dvwa container"
+      exit 1
+    fi
+    docker exec ${{variables.zapContainerName}} curl -v -L ${{variables.dvwaContainerUrl}}
+    if [ $? -eq 0 ]; 
+    then 
+      echo "Able to reach dvwa url" 
+    else 
+      echo "Not able to reach dvwa url" 
+      exit 1
+    fi
+  displayName: Running ${{variables.modifiedZap2dockerStableImageName}} container
+- bash: |
+    docker exec ${{variables.zapContainerName}} zap-baseline.py -t ${{variables.dvwaContainerUrl}} -g gen.conf -r testreport.html -n /zap/wrk/Default_Context.context -U admin
+    if [ $? -eq 0 ]; 
+    then 
+      echo "Baseline scan passed" 
+    else 
+      echo "Baseline scan failed" 
+      exit 1
+    fi
+  displayName: Running baseline scan
+- bash: |
+    docker exec ${{variables.zapContainerName}} mkdir /zap/wrk/toBePublished
+    docker exec ${{variables.zapContainerName}} cp /home/zap/.ZAP/zap.log /zap/wrk/toBePublished
+    docker exec ${{variables.zapContainerName}} cp /zap/wrk/testreport.html /zap/wrk/toBePublished
+    ls -al $(Build.Repository.LocalPath)/toBePublished
+  displayName: Copying files that are to be published
+  condition: always() # this step will always run, even if the pipeline is canceled
+
+- publish: $(Build.Repository.LocalPath)/toBePublished
+  displayName: Publishing files
+  condition: always() # this step will always run, even if the pipeline is canceled
+
+- bash: |
+    docker container ls --all
+    # making the script executable
+    chmod u+x stop_remove_container.sh
+    ./stop_remove_container.sh ${{variables.dvwaContainerName}}
+    ./stop_remove_container.sh ${{variables.zapContainerName}}
+  displayName: Stopping DVWA and ZAP Containers
+  condition: always() # this step will always run, even if the pipeline is canceled
